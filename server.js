@@ -1,12 +1,14 @@
 import express from "express";
-import fetch from "node-fetch";
 import cors from "cors";
+import dotenv from "dotenv";
 import {
   calculateDistance,
   formatDistance,
   calculateTravelTime,
   formatTravelTime,
 } from "./utils/distanceCalculator.js";
+
+dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -19,9 +21,65 @@ app.get("/", (req, res) => {
   res.json({ status: "Backend is running", endpoints: ["/api/nearby-places"] });
 });
 
+// Generate realistic mock data around user location
+function generateMockPlaces(lat, lng, type, count = 10) {
+  const placeNames = {
+    restaurant: [
+      "Pizza Palace", "Burger King", "Sushi Express", "Taco Bell", "KFC",
+      "McDonald's", "Subway", "Domino's Pizza", "Starbucks", "Local Diner",
+      "Italian Bistro", "Chinese Garden", "Thai Kitchen", "Mexican Grill", "Cafe Central"
+    ],
+    school: [
+      "Central High School", "Elementary School", "Community College", "Private Academy", "Public School",
+      "St. Mary's School", "Lincoln Elementary", "Washington High", "Roosevelt Middle", "Jefferson Academy",
+      "Oak Tree School", "Riverside Elementary", "Hillside High", "Valley School", "Maple Leaf Academy"
+    ],
+    hotel: [
+      "Grand Hotel", "Budget Inn", "Luxury Suites", "City Lodge", "Comfort Inn",
+      "Holiday Inn", "Best Western", "Marriott", "Hilton", "Motel 6",
+      "Royal Hotel", "Plaza Inn", "Garden Suites", "Downtown Lodge", "Riverside Hotel"
+    ],
+    hospital: [
+      "General Hospital", "Medical Center", "City Clinic", "Emergency Care", "Health Center",
+      "St. Joseph Hospital", "Memorial Medical", "Community Clinic", "Regional Hospital", "Family Care",
+      "Central Medical", "Urgent Care", "Specialty Hospital", "Children's Hospital", "Veterans Hospital"
+    ],
+    bank: [
+      "First National Bank", "City Bank", "Community Credit Union", "Wells Fargo", "Bank of America",
+      "Chase Bank", "TD Bank", "PNC Bank", "Capital One", "Local Credit Union",
+      "Savings & Loan", "Investment Bank", "Trust Bank", "Regional Bank", "Federal Credit Union"
+    ]
+  };
+
+  const names = placeNames[type] || placeNames.restaurant;
+  const places = [];
+
+  for (let i = 0; i < Math.min(count, names.length); i++) {
+    // Generate coordinates within ~3km radius
+    const latOffset = (Math.random() - 0.5) * 0.05; // ~2.5km range
+    const lngOffset = (Math.random() - 0.5) * 0.05;
+    
+    const placeLat = lat + latOffset;
+    const placeLng = lng + lngOffset;
+    
+    places.push({
+      id: `mock_${type}_${i}`,
+      name: names[i],
+      lat: placeLat,
+      lng: placeLng,
+      address: `${Math.floor(Math.random() * 9999) + 1} Main Street, City`,
+      rating: (Math.random() * 2 + 3).toFixed(1), // 3.0 to 5.0 rating
+      image: `https://picsum.photos/300/200?random=${i}` // Random placeholder images
+    });
+  }
+
+  return places;
+}
+
 app.post("/api/nearby-places", async (req, res) => {
   const { lat, lng, type } = req.body;
   const travelMode = "walking"; // Default to walking
+  
   if (!lat || !lng || !type) {
     return res
       .status(400)
@@ -29,120 +87,33 @@ app.post("/api/nearby-places", async (req, res) => {
   }
 
   try {
-    const latMin = lat - 0.03;
-    const latMax = lat + 0.03;
-    const lngMin = lng - 0.03;
-    const lngMax = lng + 0.03;
-
-    // Use the "type" from frontend (school, hotel, bank, etc.)
-    const url = `https://nominatim.openstreetmap.org/search?format=json&amenity=${type}&bounded=1&viewbox=${lngMin},${latMax},${lngMax},${latMin}&limit=20`;
-
-    console.log(`Fetching ${type}s from Nominatim API:`, url);
-
-    // Retry logic for Nominatim API
-    let data;
-    let lastError;
-    const maxRetries = 3;
-    
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
-      try {
-        const response = await fetch(url, {
-          headers: { 
-            "User-Agent": "NearbyPlacesApp/1.0",
-            "Accept": "application/json",
-            "Accept-Language": "en"
-          }
-        });
-
-        if (!response.ok) {
-          console.error(`Nominatim API returned status ${response.status}: ${response.statusText}`);
-          if (attempt === maxRetries) {
-            return res
-              .status(response.status)
-              .json({ error: `Nominatim API error: ${response.statusText}` });
-          }
-          // Wait before retry
-          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-          continue;
-        }
-
-        data = await response.json();
-        break; // Success, exit retry loop
-      } catch (fetchError) {
-        console.error(`Attempt ${attempt} failed:`, fetchError.message);
-        lastError = fetchError;
-        
-        if (attempt === maxRetries) {
-          throw fetchError; // Throw on last attempt
-        }
-        
-        // Wait before retry with exponential backoff
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      }
-    }
-    
-    if (!data) {
-      throw lastError || new Error("Failed to fetch data from Nominatim");
-    }
-    console.log(data);
-
     // Validate user coordinates
     if (isNaN(lat) || isNaN(lng) || lat === null || lng === null) {
       return res.status(400).json({ error: "Invalid user coordinates" });
     }
 
-    // Validate travel mode (default to walking if invalid)
-    const validModes = ["walking", "cycling", "driving"];
-    const mode = validModes.includes(travelMode) ? travelMode : "walking";
-    
-    if (!validModes.includes(travelMode)) {
-      console.warn(`Invalid travel mode "${travelMode}", defaulting to "walking"`);
-    }
+    console.log(`Generating mock ${type}s around location: ${lat}, ${lng}`);
 
-    const places = data.map((place) => {
-      const placeLat = parseFloat(place.lat);
-      const placeLon = parseFloat(place.lon);
-      
-      // Handle invalid place coordinates
-      if (isNaN(placeLat) || isNaN(placeLon)) {
-        console.warn(`Invalid coordinates for place ${place.place_id}, skipping distance calculation`);
-        return {
-          id: place.place_id,
-          name: place.display_name.split(",")[0] || `Unnamed ${type}`,
-          lat: placeLat,
-          lon: placeLon,
-          address: place.display_name,
-          distance: null,
-          distanceKm: null,
-          travelTime: null,
-          travelTimeMinutes: null,
-        };
-      }
+    // Generate mock places around the user's location
+    const mockPlaces = generateMockPlaces(lat, lng, type);
 
+    // Calculate distance and travel time for each place
+    const places = mockPlaces.map((place) => {
       try {
-        // Calculate distance and travel time
-        const distanceKm = calculateDistance(lat, lng, placeLat, placeLon);
-        const travelTimeMinutes = calculateTravelTime(distanceKm, mode);
+        const distanceKm = calculateDistance(lat, lng, place.lat, place.lng);
+        const travelTimeMinutes = calculateTravelTime(distanceKm, travelMode);
         
         return {
-          id: place.place_id,
-          name: place.display_name.split(",")[0] || `Unnamed ${type}`,
-          lat: placeLat,
-          lon: placeLon,
-          address: place.display_name,
+          ...place,
           distance: formatDistance(distanceKm),
           distanceKm: distanceKm,
           travelTime: formatTravelTime(travelTimeMinutes),
           travelTimeMinutes: travelTimeMinutes,
         };
       } catch (error) {
-        console.error(`Error calculating distance for place ${place.place_id}:`, error);
+        console.error(`Error calculating distance for place ${place.id}:`, error);
         return {
-          id: place.place_id,
-          name: place.display_name.split(",")[0] || `Unnamed ${type}`,
-          lat: placeLat,
-          lon: placeLon,
-          address: place.display_name,
+          ...place,
           distance: null,
           distanceKm: null,
           travelTime: null,
@@ -152,21 +123,19 @@ app.post("/api/nearby-places", async (req, res) => {
     });
 
     // Sort places by distance in ascending order
-    // Places with null distances go to the end
     const sortedPlaces = places.sort((a, b) => {
       if (a.distanceKm === null) return 1;
       if (b.distanceKm === null) return -1;
       return a.distanceKm - b.distanceKm;
     });
 
+    console.log(`Generated ${sortedPlaces.length} mock places`);
     res.json({ results: sortedPlaces });
+    
   } catch (error) {
-    console.error("Error fetching places:", error);
-    const errorMessage = error.code === 'ECONNREFUSED' 
-      ? "Unable to connect to location service. Please try again later."
-      : error.message || "Failed to fetch places";
+    console.error("Error generating places:", error);
     res.status(500).json({ 
-      error: errorMessage,
+      error: "Failed to generate places",
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
