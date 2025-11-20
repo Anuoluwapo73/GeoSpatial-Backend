@@ -40,10 +40,16 @@ app.post("/api/nearby-places", async (req, res) => {
     console.log(`Fetching ${type}s from Nominatim API:`, url);
 
     const response = await fetch(url, {
-      headers: { "User-Agent": "NearbyPlacesApp/1.0" },
+      headers: { 
+        "User-Agent": "NearbyPlacesApp/1.0",
+        "Accept": "application/json",
+        "Accept-Language": "en"
+      },
+      timeout: 10000
     });
 
     if (!response.ok) {
+      console.error(`Nominatim API returned status ${response.status}: ${response.statusText}`);
       return res
         .status(response.status)
         .json({ error: `Nominatim API error: ${response.statusText}` });
@@ -128,7 +134,13 @@ app.post("/api/nearby-places", async (req, res) => {
     res.json({ results: sortedPlaces });
   } catch (error) {
     console.error("Error fetching places:", error);
-    res.status(500).json({ error: "Failed to fetch places" });
+    const errorMessage = error.code === 'ECONNREFUSED' 
+      ? "Unable to connect to location service. Please try again later."
+      : error.message || "Failed to fetch places";
+    res.status(500).json({ 
+      error: errorMessage,
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 
