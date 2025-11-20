@@ -39,23 +39,51 @@ app.post("/api/nearby-places", async (req, res) => {
 
     console.log(`Fetching ${type}s from Nominatim API:`, url);
 
-    const response = await fetch(url, {
-      headers: { 
-        "User-Agent": "NearbyPlacesApp/1.0",
-        "Accept": "application/json",
-        "Accept-Language": "en"
-      },
-      timeout: 10000
-    });
+    // Retry logic for Nominatim API
+    let data;
+    let lastError;
+    const maxRetries = 3;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const response = await fetch(url, {
+          headers: { 
+            "User-Agent": "NearbyPlacesApp/1.0",
+            "Accept": "application/json",
+            "Accept-Language": "en"
+          }
+        });
 
-    if (!response.ok) {
-      console.error(`Nominatim API returned status ${response.status}: ${response.statusText}`);
-      return res
-        .status(response.status)
-        .json({ error: `Nominatim API error: ${response.statusText}` });
+        if (!response.ok) {
+          console.error(`Nominatim API returned status ${response.status}: ${response.statusText}`);
+          if (attempt === maxRetries) {
+            return res
+              .status(response.status)
+              .json({ error: `Nominatim API error: ${response.statusText}` });
+          }
+          // Wait before retry
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+          continue;
+        }
+
+        data = await response.json();
+        break; // Success, exit retry loop
+      } catch (fetchError) {
+        console.error(`Attempt ${attempt} failed:`, fetchError.message);
+        lastError = fetchError;
+        
+        if (attempt === maxRetries) {
+          throw fetchError; // Throw on last attempt
+        }
+        
+        // Wait before retry with exponential backoff
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
     }
-
-    const data = await response.json();
+    
+    if (!data) {
+      throw lastError || new Error("Failed to fetch data from Nominatim");
+    }
     console.log(data);
 
     // Validate user coordinates
