@@ -21,59 +21,69 @@ app.get("/", (req, res) => {
   res.json({ status: "Backend is running", endpoints: ["/api/nearby-places"] });
 });
 
-// Generate realistic mock data around user location
-function generateMockPlaces(lat, lng, type, count = 10) {
-  const placeNames = {
-    restaurant: [
-      "Pizza Palace", "Burger King", "Sushi Express", "Taco Bell", "KFC",
-      "McDonald's", "Subway", "Domino's Pizza", "Starbucks", "Local Diner",
-      "Italian Bistro", "Chinese Garden", "Thai Kitchen", "Mexican Grill", "Cafe Central"
-    ],
-    school: [
-      "Central High School", "Elementary School", "Community College", "Private Academy", "Public School",
-      "St. Mary's School", "Lincoln Elementary", "Washington High", "Roosevelt Middle", "Jefferson Academy",
-      "Oak Tree School", "Riverside Elementary", "Hillside High", "Valley School", "Maple Leaf Academy"
-    ],
-    hotel: [
-      "Grand Hotel", "Budget Inn", "Luxury Suites", "City Lodge", "Comfort Inn",
-      "Holiday Inn", "Best Western", "Marriott", "Hilton", "Motel 6",
-      "Royal Hotel", "Plaza Inn", "Garden Suites", "Downtown Lodge", "Riverside Hotel"
-    ],
-    hospital: [
-      "General Hospital", "Medical Center", "City Clinic", "Emergency Care", "Health Center",
-      "St. Joseph Hospital", "Memorial Medical", "Community Clinic", "Regional Hospital", "Family Care",
-      "Central Medical", "Urgent Care", "Specialty Hospital", "Children's Hospital", "Veterans Hospital"
-    ],
-    bank: [
-      "First National Bank", "City Bank", "Community Credit Union", "Wells Fargo", "Bank of America",
-      "Chase Bank", "TD Bank", "PNC Bank", "Capital One", "Local Credit Union",
-      "Savings & Loan", "Investment Bank", "Trust Bank", "Regional Bank", "Federal Credit Union"
-    ]
-  };
+// Fetch real places from Overpass API (OpenStreetMap data)
+async function fetchRealPlaces(lat, lng, type) {
+  const radius = 3000; // 3km radius in meters
+  
+  // Overpass QL query to find real places around the location
+  const overpassQuery = `
+    [out:json][timeout:25];
+    (
+      node["amenity"="${type}"](around:${radius},${lat},${lng});
+      way["amenity"="${type}"](around:${radius},${lat},${lng});
+      relation["amenity"="${type}"](around:${radius},${lat},${lng});
+    );
+    out center meta;
+  `;
 
-  const names = placeNames[type] || placeNames.restaurant;
-  const places = [];
+  const url = 'https://overpass-api.de/api/interpreter';
+  
+  console.log(`Fetching real ${type}s from Overpass API`);
 
-  for (let i = 0; i < Math.min(count, names.length); i++) {
-    // Generate coordinates within ~3km radius
-    const latOffset = (Math.random() - 0.5) * 0.05; // ~2.5km range
-    const lngOffset = (Math.random() - 0.5) * 0.05;
-    
-    const placeLat = lat + latOffset;
-    const placeLng = lng + lngOffset;
-    
-    places.push({
-      id: `mock_${type}_${i}`,
-      name: names[i],
-      lat: placeLat,
-      lng: placeLng,
-      address: `${Math.floor(Math.random() * 9999) + 1} Main Street, City`,
-      rating: (Math.random() * 2 + 3).toFixed(1), // 3.0 to 5.0 rating
-      image: `https://picsum.photos/300/200?random=${i}` // Random placeholder images
-    });
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'User-Agent': 'NearbyPlacesApp/1.0'
+    },
+    body: `data=${encodeURIComponent(overpassQuery)}`
+  });
+
+  if (!response.ok) {
+    throw new Error(`Overpass API error: ${response.status} ${response.statusText}`);
   }
 
-  return places;
+  const data = await response.json();
+  
+  return data.elements.map(element => {
+    // Handle different element types (node, way, relation)
+    const lat = element.lat || element.center?.lat;
+    const lng = element.lon || element.center?.lon;
+    
+    const name = element.tags?.name || 
+                 element.tags?.brand || 
+                 element.tags?.[`name:en`] || 
+                 `Unnamed ${type}`;
+    
+    const address = [
+      element.tags?.['addr:housenumber'],
+      element.tags?.['addr:street'],
+      element.tags?.['addr:city']
+    ].filter(Boolean).join(' ') || 'Address not available';
+
+    return {
+      id: element.id,
+      name: name,
+      lat: lat,
+      lng: lng,
+      address: address,
+      phone: element.tags?.phone || null,
+      website: element.tags?.website || null,
+      opening_hours: element.tags?.opening_hours || null,
+      cuisine: element.tags?.cuisine || null,
+      image: `https://picsum.photos/300/200?random=${element.id}` // Placeholder image
+    };
+  }).filter(place => place.lat && place.lng); // Filter out places without coordinates
 }
 
 app.post("/api/nearby-places", async (req, res) => {
@@ -92,13 +102,27 @@ app.post("/api/nearby-places", async (req, res) => {
       return res.status(400).json({ error: "Invalid user coordinates" });
     }
 
-    console.log(`Generating mock ${type}s around location: ${lat}, ${lng}`);
+    console.log(`Fetching real ${type}s around location: ${lat}, ${lng}`);
 
-    // Generate mock places around the user's location
-    const mockPlaces = generateMockPlaces(lat, lng, type);
+    // Fetch real places from Overpass API with timeout
+    let realPlaces;
+    try {
+      realPlaces = await Promise.race([
+        fetchRealPlaces(lat, lng, type),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('API timeout')), 15000)
+        )
+      ]);
+    } catch (apiError) {
+      console.error('Overpass API failed:', apiError.message);
+      return res.status(503).json({ 
+        error: "Unable to fetch places at the moment. Please try again later.",
+        details: apiError.message
+      });
+    }
 
     // Calculate distance and travel time for each place
-    const places = mockPlaces.map((place) => {
+    const places = realPlaces.map((place) => {
       try {
         const distanceKm = calculateDistance(lat, lng, place.lat, place.lng);
         const travelTimeMinutes = calculateTravelTime(distanceKm, travelMode);
@@ -129,7 +153,7 @@ app.post("/api/nearby-places", async (req, res) => {
       return a.distanceKm - b.distanceKm;
     });
 
-    console.log(`Generated ${sortedPlaces.length} mock places`);
+    console.log(`Found ${sortedPlaces.length} real places`);
     res.json({ results: sortedPlaces });
     
   } catch (error) {
