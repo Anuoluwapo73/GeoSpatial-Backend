@@ -14,6 +14,11 @@ const PORT = process.env.PORT || 5000;
 app.use(cors());
 app.use(express.json());
 
+// Health check endpoint
+app.get("/", (req, res) => {
+  res.json({ status: "Backend is running", endpoints: ["/api/nearby-places"] });
+});
+
 app.post("/api/nearby-places", async (req, res) => {
   const { lat, lng, type } = req.body;
   const travelMode = "walking"; // Default to walking
